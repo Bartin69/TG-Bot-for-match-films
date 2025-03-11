@@ -34,6 +34,13 @@ def init_db():
             FOREIGN KEY (partner_id) REFERENCES users_tg(user_id)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS viewed_movies (
+            user_id BIGINT,
+            movie_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users_tg(user_id)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -182,8 +189,17 @@ def handle_delete_connection(update: Update, context: CallbackContext):
 
 # Обработка скипа
 def skip_movie(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
+    user_id = update.callback_query.from_user.id
+    movie_id = context.user_data.get('current_movie')
+
+    # Добавляем фильм в просмотренные
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO viewed_movies (user_id, movie_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (user_id, movie_id))
+    conn.commit()
+    conn.close()
+
+    update.callback_query.answer("Фильм пропущен.")
     show_movies(update, context)  # Показываем следующий фильм
 
 # Модифицированная функция show_movies
@@ -218,8 +234,23 @@ def show_movies(update: Update, context: CallbackContext):
         loading_message.edit_text("Ошибка: API не вернул список фильмов.")
         return
 
-    # Выбираем случайный фильм
-    movie = random.choice(movies)
+    # Получаем список уже просмотренных фильмов пользователя
+    user_id = query.from_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT movie_id FROM viewed_movies WHERE user_id = %s', (user_id,))
+    viewed_movies = set(movie[0] for movie in cursor.fetchall())
+    conn.close()
+
+    # Фильтруем фильмы, исключая уже просмотренные
+    available_movies = [movie for movie in movies if movie.get("kinopoiskId") not in viewed_movies]
+
+    if not available_movies:
+        loading_message.edit_text("Вы уже просмотрели все доступные фильмы.")
+        return
+
+    # Выбираем случайный фильм из доступных
+    movie = random.choice(available_movies)
     movie_id = movie.get("kinopoiskId")
 
     if not movie_id:
@@ -290,6 +321,7 @@ def like_movie(update: Update, context: CallbackContext):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('INSERT INTO likes (user_id, movie_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (user_id, movie_id))
+    cursor.execute('INSERT INTO viewed_movies (user_id, movie_id) VALUES (%s, %s) ON CONFLICT DO NOTHING', (user_id, movie_id))
     conn.commit()
     conn.close()
 
